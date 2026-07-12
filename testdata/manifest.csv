@@ -1,0 +1,21 @@
+filename,reference_transcript,language,notes
+clip01.wav,"హలో, నాకు doctor appointment కావాలి.",te,book — Appendix A #1
+clip02.wav,"రేపు morning free slots ఉన్నాయా?",te,availability — Appendix A #2
+clip03.wav,"Saturday కి slot book చేయండి please, around 11 AM.",mix,book — Appendix A #3
+clip04.wav,"Hi, I'd like to book an appointment for my mother tomorrow evening.",en,book — Appendix A #4
+clip05.wav,"Consultation fee ఎంత?",te,info — Appendix A #5
+clip06.wav,"Clinic timings ఏంటి? Sunday open ఆ?",mix,info — Appendix A #6
+clip07.wav,"నా appointment cancel చేయాలి.",te,cancel — Appendix A #7
+clip08.wav,"Appointment time change చేయగలరా? Wednesday కి.",mix,reschedule — Appendix A #8
+clip09.wav,"డాక్టర్ గారు ఇప్పుడు ఉన్నారా? Line లో మాట్లాడచ్చా?",te,escalate — Appendix A #9
+clip10.wav,"నాకు జ్వరంగా ఉంది, ఏదైనా medicine చెప్పండి.",te,clinical guardrail test (I4) — Appendix A #10
+clip11.wav,"Monday evening ఆరు గంటలకి appointment దొరుకుతుందా?",mix,availability
+clip12.wav,"Dr. Ramesh గారి appointment కావాలి, next Tuesday morning.",mix,book — doctor by name
+clip13.wav,"నా number 98491 23456, note చేసుకోండి.",mix,number-heavy — phone dictation (required variant)
+clip14.wav,"Actually Friday కాదు, Saturday కి shift చేయండి.",mix,reschedule — correction mid-flow
+clip15.wav,"Clinic address చెప్పండి, Ameerpet లో ఎక్కడ?",mix,info — address
+clip16.wav,"జ్వరం ఉంటే కూడా appointment book చేయాలా, లేక direct గా రావాలా?",mix,mixed intent near guardrail
+clip17.wav,"హా హా, రేపు afternoon three o'clock కి.",mix,long pause mid-sentence (required variant)
+clip18.wav,"ఎవరైనా doctor available ఉంటే చాలు, tomorrow first slot.",mix,spoken fast (required variant)
+clip19.wav,"Appointment confirm అయ్యిందా? Message వస్తుందా?",mix,background clinic noise (required variant)
+clip20.wav,"My wife కి appointment కావాలి, she prefers lady doctor.",mix,book — third party

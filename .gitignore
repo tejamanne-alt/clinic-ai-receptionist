@@ -1,0 +1,18 @@
+# deps / build
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# env — never commit real keys (I2). The template is .env.example.
+.env
+.env.*
+!.env.example
+
+# generated audio samples (regenerable via pnpm bakeoff:tts)
+reports/tts-samples/
+
+# misc
+.DS_Store
+npm-debug.log*
+pnpm-debug.log*

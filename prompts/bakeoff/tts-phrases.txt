@@ -1,0 +1,9 @@
+# TTS bake-off phrases — receptionist lines the voice will actually say.
+# One per line; # lines are ignored. Used by `pnpm bakeoff:tts`.
+నమస్తే, శ్రీ వెంకటేశ్వర క్లినిక్! Appointment కావాలా?
+మీ appointment confirm అయ్యింది — రేపు ఉదయం పది గంటలకి, డాక్టర్ రమేష్ గారితో.
+WhatsApp లో confirmation పంపమంటారా?
+అది డాక్టర్ గారు consultation లో చెప్తారు — నేను appointment book చేయగలను.
+క్షమించండి, వినపడలేదు. మళ్ళీ చెప్పగలరా?
+Sorry అండి, ఆ time కి slot లేదు. Monday 11 AM లేదా Tuesday 4 PM — ఏది convenient?
+మీ number 98 49 12 34 56 — correct ఏనా?
