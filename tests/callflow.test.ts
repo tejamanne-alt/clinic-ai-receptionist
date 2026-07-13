@@ -1,7 +1,14 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createFlow, reduce } from "../src/lib/callflow/machine";
+import { parseScript, renderLine } from "../src/lib/callflow/script";
 import type { ClinicConfig, FlowAction, FlowContext, FlowEvent } from "../src/lib/callflow/types";
 import type { SlotOption, ToolResult } from "../src/lib/tools/shared";
+
+const SCRIPT = parseScript(
+  readFileSync(path.join(__dirname, "..", "prompts", "voice", "callflow.te-en.md"), "utf8"),
+);
 
 const CONFIG: ClinicConfig = {
   clinicId: "00000000-0000-0000-0000-000000000001",
@@ -311,7 +318,8 @@ describe("INFO intent (I1: facts only from tools)", () => {
     const info = { name: "Sri Venkateswara Clinic", doctors: [{ name: "Dr. Ramesh", consultation_fee_inr: 300 }] };
     const a2 = sim.toolOk("get_clinic_info", info);
     const summary = a2.find((a) => a.key === "info_summary");
-    expect(summary?.params).toMatchObject({ topic: "fee", info });
+    // the spoken line is assembled from the tool payload (I1), fee included
+    expect(summary?.params?.infoLine).toBe("Consultation fee: Dr. Ramesh ₹300.");
     expect(sim.say(a2)).toEqual(["info_summary", "anything_else"]);
   });
 });
@@ -326,6 +334,72 @@ describe("language mirroring (§6 rule 1)", () => {
     sim.step({ type: "CALL_STARTED" });
     sim.utter(text);
     expect(sim.ctx.language).toBe(lang);
+  });
+});
+
+describe("lexicon regressions (from review)", () => {
+  it('"second one" selects the second slot, not the first', () => {
+    const sim = new Sim();
+    sim.step({ type: "CALL_STARTED" });
+    sim.utter("book with Ramesh");
+    sim.utter("tomorrow");
+    sim.toolOk("find_slots", { slots: [SLOT_A, SLOT_B] });
+    sim.utter("the second one please");
+    expect(sim.ctx.collected.chosenSlot?.slot_start).toBe(SLOT_B.slot_start);
+  });
+
+  it('"that\'s incorrect" at readback is a NO, not a YES (guards §6 rule 4)', () => {
+    const sim = new Sim();
+    sim.step({ type: "CALL_STARTED" });
+    sim.utter("book with Ramesh");
+    sim.utter("tomorrow");
+    sim.toolOk("find_slots", { slots: [SLOT_A] });
+    sim.utter("first");
+    sim.utter("Suresh");
+    sim.utter("9849123456");
+    const no = sim.utter("no that's incorrect");
+    // must NOT proceed to consent/booking; asks for the correction instead
+    expect(sim.say(no)).toEqual(["ask_correction"]);
+    expect(sim.history.flat().some((a) => a.tool === "create_booking")).toBe(false);
+  });
+
+  it('a medical-sounding substring like "cold" in a normal answer is not deflected', () => {
+    const sim = new Sim();
+    sim.step({ type: "CALL_STARTED" });
+    sim.utter("book with Ramesh");
+    // "could" and "cold" — must be treated as a datetime answer, not medical
+    const a = sim.utter("could we do tomorrow");
+    expect(sim.say(a)).not.toContain("medical_deflect");
+    expect(sim.toolCalls(a)[0]?.tool).toBe("find_slots");
+  });
+
+  it("the third existing appointment is pickable in disambiguation", () => {
+    const sim = new Sim();
+    const SLOT_C = { ...SLOT_A, slot_start: "2026-07-15T04:30:00.000Z", label: "Wed, 15 July, 10:00 am" };
+    sim.step({ type: "CALL_STARTED" });
+    sim.utter("cancel cheyandi");
+    sim.utter("9849123456");
+    sim.toolFail("cancel_booking", "MULTIPLE_MATCHES", [SLOT_A, SLOT_B, SLOT_C]);
+    const pick = sim.utter("the third one");
+    expect(sim.toolCalls(pick)[0]).toMatchObject({
+      tool: "cancel_booking",
+      input: { slot_start: SLOT_C.slot_start },
+    });
+  });
+
+  it("reschedule readback does not leak a {patientName} placeholder", () => {
+    const sim = new Sim();
+    sim.step({ type: "CALL_STARTED" });
+    sim.utter("reschedule my appointment");
+    sim.utter("9849123456");
+    sim.toolOk("find_slots", { slots: [SLOT_A, SLOT_B] });
+    const rb = sim.utter("second");
+    const say = rb.find((a) => a.type === "SAY");
+    expect(say?.key).toBe("confirm_readback_reschedule");
+    // the rendered line must not leak {patientName} (reschedule has no name slot)
+    const rendered = renderLine(SCRIPT, "confirm_readback_reschedule", "en", say?.params ?? {});
+    expect(rendered).not.toContain("{patientName}");
+    expect(rendered).toContain(SLOT_B.label);
   });
 });
 

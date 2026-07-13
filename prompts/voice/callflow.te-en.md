@@ -55,6 +55,10 @@ callers. `tests/script.test.ts` fails if any engine key is missing here.
 - te: Confirm చేస్తున్నాను: {patientName} గారికి, {doctorName} గారితో, {label} కి appointment. మీ number {phonePairs}. అంతా correct ఏనా?
 - en: Let me confirm: an appointment for {patientName}, with {doctorName}, on {label}. Your number is {phonePairs}. Is everything correct?
 
+## confirm_readback_reschedule
+- te: Confirm చేస్తున్నాను: {doctorName} గారితో, {label} కి appointment మార్చుతున్నాను. Correct ఏనా?
+- en: Let me confirm: moving your appointment with {doctorName} to {label}. Is that correct?
+
 ## ask_consent
 - te: Booking confirmation ని WhatsApp లో పంపమంటారా? మీ అనుమతి ఉంటేనే పంపుతాము.
 - en: Would you like the booking confirmation on WhatsApp? We'll only send it with your permission.

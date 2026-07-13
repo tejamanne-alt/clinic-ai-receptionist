@@ -71,9 +71,9 @@ async function upsertPatient(
   );
   const found = existing.rows[0];
   if (found) {
-    if (whatsappConsent) {
-      await pool.query(`update public.patients set whatsapp_consent = true where id = $1`, [found.id]);
-    }
+    // Reflect THIS call's consent both ways — a later decline must revoke a
+    // prior yes (§6 rule 5: consent is per-call, never sticky).
+    await pool.query(`update public.patients set whatsapp_consent = $2 where id = $1`, [found.id, whatsappConsent]);
     return found.id;
   }
   const inserted = await pool.query<{ id: string }>(
@@ -110,8 +110,8 @@ export async function createBooking(pool: Pool, input: CreateBookingInput): Prom
 
   try {
     const { rows } = await pool.query<AppointmentRow>(
-      `select * from public.create_booking($1, $2, $3, $4::timestamptz, $5, 'voice')`,
-      [input.clinic_id, input.doctor_id, patientId, input.slot_start, input.call_id ?? null],
+      `select * from public.create_booking($1, $2, $3, $4::timestamptz, $5, 'voice', $6)`,
+      [input.clinic_id, input.doctor_id, patientId, input.slot_start, input.call_id ?? null, input.whatsapp_consent],
     );
     const appt = rows[0];
     if (!appt) throw new Error("create_booking returned no row");
@@ -240,9 +240,11 @@ export async function rescheduleBooking(
   if (!target) return fail("APPOINTMENT_NOT_FOUND", "No upcoming confirmed appointment for that phone number.");
 
   try {
+    // input.doctor_id disambiguates the existing appointment (search filter);
+    // the NEW doctor is new_doctor_id, defaulting to keeping the same doctor.
     const { rows } = await pool.query<AppointmentRow>(
       `select * from public.reschedule_booking($1, $2::timestamptz, $3)`,
-      [target.id, input.new_slot_start, input.doctor_id ?? null],
+      [target.id, input.new_slot_start, input.new_doctor_id ?? null],
     );
     const appt = rows[0];
     if (!appt) throw new Error("reschedule_booking returned no row");
@@ -270,7 +272,7 @@ export async function rescheduleBooking(
       const alternatives = await nearestAlternatives(
         pool,
         input.clinic_id,
-        input.doctor_id ?? target.doctor_id,
+        input.new_doctor_id ?? target.doctor_id,
         input.new_slot_start,
       );
       return fail(code, "That new slot is not available. Offer exactly these alternatives.", alternatives);

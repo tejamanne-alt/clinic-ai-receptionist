@@ -26,6 +26,7 @@ interface ApptRow {
   patient_id: string;
   patient_name: string;
   phone: string;
+  /** consent recorded for THIS booking (§6 rule 5), not the sticky patient flag */
   whatsapp_consent: boolean;
   doctor_name: string;
   slot_start: Date;
@@ -38,7 +39,8 @@ export async function sendBookingConfirmation(
   provider: MessagingProvider = selectProvider(),
 ): Promise<ConfirmationOutcome> {
   const { rows } = await pool.query<ApptRow>(
-    `select p.id as patient_id, p.full_name as patient_name, p.phone, p.whatsapp_consent,
+    `select p.id as patient_id, p.full_name as patient_name, p.phone,
+            a.whatsapp_consent,
             d.name as doctor_name, a.slot_start, c.name as clinic_name
        from public.appointments a
        join public.patients p on p.id = a.patient_id
@@ -59,12 +61,14 @@ export async function sendBookingConfirmation(
   const body = `Namaste ${appt.patient_name}, your appointment at ${appt.clinic_name} with ${appt.doctor_name} is confirmed for ${label}. Reply here to reschedule.`;
   const templateName = process.env.WHATSAPP_TEMPLATE_NAME ?? "booking_confirmation";
 
-  // insert queued row first (audit even if the send throws)
+  // insert queued row first (audit even if the send throws). consent_verified
+  // carries the real per-booking consent so the DB check constraint
+  // (messages_consent_before_send) is a genuine backstop, not always-true.
   const inserted = await pool.query<{ id: string }>(
     `insert into public.messages
        (clinic_id, patient_id, appointment_id, call_id, provider, to_phone,
         template_name, body, consent_verified, status)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, true, 'queued')
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued')
      returning id`,
     [
       req.clinicId,
@@ -75,6 +79,7 @@ export async function sendBookingConfirmation(
       appt.phone,
       templateName,
       body,
+      appt.whatsapp_consent,
     ],
   );
   const messageId = inserted.rows[0]?.id;

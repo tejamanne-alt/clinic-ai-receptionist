@@ -49,9 +49,35 @@ const FALLBACK_WORDS = [
   "line lo", "call back", "callback", "human", "staff", "receptionist please",
 ];
 
+/** Substring match — used for INTENT keywords where Telugu agglutination
+ * ("appointmentki", "slotki") means we WANT prefix/substring hits, and a
+ * false positive is corrected by the subsequent slot-fill anyway. */
 function hasAny(text: string, words: readonly string[]): boolean {
   const t = text.toLowerCase();
   return words.some((w) => t.includes(w));
+}
+
+const LATIN_ONLY = /^[a-z0-9 ']+$/;
+
+/**
+ * Boundary-aware match — used where precision matters (yes/no, ordinals,
+ * medical). For Latin/romanized keywords it requires word boundaries, so
+ * "correct" no longer matches inside "incorrect" and "cold" no longer
+ * matches inside "could". For Telugu-script keywords it falls back to
+ * substring, since Telugu suffixes attach to the stem ("జ్వరంగా" ⊇ "జ్వరం").
+ */
+function hasWord(text: string, word: string): boolean {
+  const t = text.toLowerCase();
+  const w = word.toLowerCase();
+  if (LATIN_ONLY.test(w)) {
+    const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`).test(t);
+  }
+  return t.includes(w);
+}
+
+function hasWordAny(text: string, words: readonly string[]): boolean {
+  return words.some((w) => hasWord(text, w));
 }
 
 /** Priority: cancel/reschedule beat book ("cancel my appointment" contains "appointment"). */
@@ -70,22 +96,32 @@ const MEDICAL_WORDS = [
   "vanthulu", "వాంతులు", "cold", "cough", "daggu", "దగ్గు", "bp ", "sugar level",
 ];
 
-/** I4: any request for medical guidance gets the scripted deflection. */
+/** I4: any request for medical guidance gets the scripted deflection.
+ * Boundary-aware so "cold"/"pain"/"dose"/"bp" don't fire inside unrelated
+ * words (e.g. a doctor surname or "I want a cold-drink slot"). */
 export function isMedicalQuestion(text: string): boolean {
-  return hasAny(text, MEDICAL_WORDS);
+  return hasWordAny(text, MEDICAL_WORDS);
 }
 
 const YES_WORDS = [
   "yes", "yeah", "yep", "avunu", "అవును", "sare", "సరే", "ok", "okay", "correct",
-  "right", "haan", "ha ", "confirm", "cheyandi", "book cheyandi", "sure",
+  "right", "haan", "confirm", "cheyandi", "sure",
 ];
-const NO_WORDS = ["no", "kaadu", "కాదు", "vaddu", "వద్దు", "nahi", "not", "wrong", "cancel"];
+const NO_WORDS = [
+  "no", "kaadu", "కాదు", "vaddu", "వద్దు", "nahi", "not", "wrong", "cancel",
+  "incorrect", "change",
+];
 
+/**
+ * Boundary-aware so "incorrect" is not read as "correct"→yes (which would
+ * defeat the §6-rule-4 readback gate) and "cannot" is not read as "no". "no"
+ * is checked first so a refusal that also contains a stray affirmative
+ * ("no, that's not correct") resolves to false; genuinely ambiguous input
+ * returns null and the caller is re-asked.
+ */
 export function parseYesNo(text: string): boolean | null {
-  const t = ` ${text.toLowerCase().trim()} `;
-  // "no" checked first: "no no correct kaadu" is a refusal
-  if (NO_WORDS.some((w) => t.includes(w))) return false;
-  if (YES_WORDS.some((w) => t.includes(w))) return true;
+  if (hasWordAny(text, NO_WORDS)) return false;
+  if (hasWordAny(text, YES_WORDS)) return true;
   return null;
 }
 
@@ -109,25 +145,38 @@ export function parseDoctorChoice(
     const parts = surname.split(/\s+/).filter((p) => p.length >= 3);
     if (parts.some((p) => t.includes(p))) return { id: d.id, name: d.name };
   }
-  if (hasAny(text, ANY_DOCTOR_WORDS)) return { id: "any" };
+  if (hasWordAny(text, ANY_DOCTOR_WORDS)) return { id: "any" };
   return null;
 }
 
-const FIRST_WORDS = ["first", "mondati", "మొదటి", "one", "1", "okati", "ఒకటి"];
-const SECOND_WORDS = ["second", "rendodi", "రెండో", "two", "2", "rendu", "రెండు"];
+// Ordinals for slot/appointment choice. Checked most-specific first so an
+// incidental "one" in "the second one" never wins over "second".
+const ORDINALS: ReadonlyArray<{ index: number; words: readonly string[] }> = [
+  { index: 2, words: ["third", "moodo", "మూడో", "moodavadi", "three", "3", "మూడు"] },
+  { index: 1, words: ["second", "rendodi", "రెండో", "rendavadi", "two", "2", "rendu", "రెండు"] },
+  { index: 0, words: ["first", "mondati", "మొదటి", "okati", "ఒకటి", "one", "1"] },
+];
 
-/** Which of the ≤2 offered slots did the caller pick? */
+/**
+ * Which of the offered options (≤3) did the caller pick? Distinctive label
+ * fragments (e.g. "10:15") win first; otherwise ordinals, evaluated
+ * third→second→first so "the second one" selects index 1, not 0.
+ */
 export function parseOptionChoice(text: string, optionLabels: readonly string[]): number | null {
   const t = text.toLowerCase();
   for (let i = 0; i < optionLabels.length; i++) {
     const label = optionLabels[i];
     if (!label) continue;
-    // match on a distinctive fragment of the label (e.g. "10:15 am" or weekday)
-    const fragments = label.toLowerCase().split(/[,\s]+/).filter((f) => f.length >= 3);
+    // distinctive fragments only (times like "10:15"; skip shared weekday/month)
+    const fragments = label
+      .toLowerCase()
+      .split(/[,\s]+/)
+      .filter((f) => f.length >= 3 && /[0-9:]/.test(f));
     if (fragments.some((f) => t.includes(f))) return i;
   }
-  if (hasAny(text, FIRST_WORDS)) return 0;
-  if (hasAny(text, SECOND_WORDS) && optionLabels.length > 1) return 1;
+  for (const { index, words } of ORDINALS) {
+    if (index < optionLabels.length && hasWordAny(text, words)) return index;
+  }
   return null;
 }
 

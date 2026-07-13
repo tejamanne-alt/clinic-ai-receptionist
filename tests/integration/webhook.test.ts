@@ -138,4 +138,39 @@ describe.skipIf(!HAS_DB)("vapi webhook (integration)", () => {
     const res = await handleVapiMessage({ type: "hang" } as VapiMessage, pool);
     expect(res.status).toBe(200);
   });
+
+  it("never spawns duplicate calls rows for one provider call (I7)", async () => {
+    const rows = await pool.query(`select count(*)::int as n from public.calls where provider_call_id = $1`, [
+      providerCallId,
+    ]);
+    // across all the tool-calls + end-of-call messages above, exactly one row
+    expect(rows.rows[0]!.n).toBe(1);
+  });
+
+  it("persists the caller number and intent on the call (A2 audit record)", async () => {
+    const pcid = `vapi_${randomUUID()}`;
+    await handleVapiMessage(
+      {
+        type: "tool-calls",
+        call: { id: pcid, metadata: { clinicId: fx.clinicId }, customer: { number: "+919800001111" } },
+        toolCalls: [{ id: "tc", function: { name: "get_clinic_info", arguments: "{}" } }],
+      } as VapiMessage,
+      pool,
+    );
+    const call = await pool.query(`select from_phone, intent from public.calls where provider_call_id = $1`, [pcid]);
+    expect(call.rows[0]!.from_phone).toBe("+919800001111");
+    expect(call.rows[0]!.intent).toBe("INFO");
+  });
+
+  it("fails closed when no clinic scope can be established (I1/I5)", async () => {
+    const res = await handleVapiMessage(
+      {
+        type: "tool-calls",
+        call: { id: `vapi_${randomUUID()}` }, // no metadata.clinicId, not in DB
+        toolCalls: [{ id: "tc", function: { name: "get_clinic_info", arguments: '{"clinic_id":"11111111-1111-1111-1111-111111111111"}' } }],
+      } as VapiMessage,
+      pool,
+    );
+    expect(res.status).toBe(400); // never trusts the model-supplied clinic_id
+  });
 });

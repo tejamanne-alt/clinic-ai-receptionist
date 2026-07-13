@@ -83,6 +83,54 @@ describe.skipIf(!HAS_DB)("WhatsApp confirmation consent gate (integration)", () 
     expect(msg.rows[0]?.n).toBe(0);
   });
 
+  it("a RETURNING patient who declines on a later call is NOT messaged (consent is per-call, not sticky)", async () => {
+    const provider = spyProvider();
+    const phone = nextPhone();
+    // call 1: same patient consents
+    const first = await executeTool(
+      "create_booking",
+      {
+        clinic_id: fx.clinicId,
+        doctor_id: fx.doctorId,
+        patient_name: "Sticky Consent",
+        patient_phone: phone,
+        slot_start: fx.slotStarts[3]!,
+        confirmed: true,
+        whatsapp_consent: true,
+      },
+      pool,
+    );
+    expect(first.ok).toBe(true);
+    const firstId = first.ok ? (first.data as { appointment_id: string }).appointment_id : "";
+    expect((await sendBookingConfirmation({ clinicId: fx.clinicId, appointmentId: firstId }, pool, provider)).sent).toBe(true);
+
+    // call 2: SAME name+phone, now DECLINES
+    const second = await executeTool(
+      "create_booking",
+      {
+        clinic_id: fx.clinicId,
+        doctor_id: fx.doctorId,
+        patient_name: "Sticky Consent",
+        patient_phone: phone,
+        slot_start: fx.slotStarts[4]!,
+        confirmed: true,
+        whatsapp_consent: false,
+      },
+      pool,
+    );
+    expect(second.ok).toBe(true);
+    const secondId = second.ok ? (second.data as { appointment_id: string }).appointment_id : "";
+    const callsBefore = provider.calls;
+    const outcome = await sendBookingConfirmation({ clinicId: fx.clinicId, appointmentId: secondId }, pool, provider);
+    expect(outcome).toEqual({ sent: false, reason: "no_consent" });
+    expect(provider.calls).toBe(callsBefore); // no new send
+    // and the patient flag was downgraded to reflect the latest decline
+    const patient = await pool.query(`select whatsapp_consent from public.patients where phone = $1`, [
+      `+91${phone}`,
+    ]);
+    expect(patient.rows[0]?.whatsapp_consent).toBe(false);
+  });
+
   it("the DB constraint backstops a send attempt without consent", async () => {
     // Directly attempt to insert a 'sent' message with consent false — the
     // messages_consent_before_send CHECK must reject it (defense in depth).

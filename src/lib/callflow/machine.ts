@@ -73,6 +73,54 @@ function optionLabels(slots: readonly SlotOption[]): string[] {
   return slots.map((s) => s.label);
 }
 
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+interface ClinicInfoPayload {
+  name?: string;
+  address?: string | null;
+  phone?: string | null;
+  doctors?: Array<{ name: string; specialty?: string | null; consultation_fee_inr?: number | null }>;
+  timings?: Array<{ weekday: number; sessions: Array<{ start: string; end: string }> }>;
+}
+
+/**
+ * Assemble a spoken INFO line from the get_clinic_info payload (I1: facts
+ * come only from the tool result; this just phrases them). The voice model
+ * localizes wording; the numbers/strings here are the DB's.
+ */
+function formatInfoLine(topic: FlowContext["infoTopic"], data: unknown): string {
+  const info = (data ?? {}) as ClinicInfoPayload;
+  const doctors = info.doctors ?? [];
+
+  if (topic === "fee") {
+    const fees = doctors
+      .filter((d) => d.consultation_fee_inr != null)
+      .map((d) => `${d.name} ₹${d.consultation_fee_inr}`);
+    return fees.length ? `Consultation fee: ${fees.join(", ")}.` : "Please ask our staff about the consultation fee.";
+  }
+  if (topic === "address") {
+    return info.address ? `We are at ${info.address}.` : "Let me have our staff share the address with you.";
+  }
+  if (topic === "timings") {
+    const days = (info.timings ?? []).map((t) => {
+      const sessions = t.sessions.map((s) => `${s.start}–${s.end}`).join(", ");
+      return `${WEEKDAYS[t.weekday] ?? "Day " + t.weekday}: ${sessions}`;
+    });
+    return days.length ? `Clinic timings — ${days.join("; ")}.` : "Please ask our staff for the current timings.";
+  }
+  // general: a compact combined line
+  const parts: string[] = [];
+  if (info.address) parts.push(`We are at ${info.address}`);
+  if (doctors.length) parts.push(`doctors: ${doctors.map((d) => d.name).join(", ")}`);
+  return parts.length ? `${parts.join("; ")}.` : "How can I help you with your appointment?";
+}
+
+/** RESCHEDULE has no patient-name slot, so it uses a readback line without
+ * {patientName} (avoids speaking a leaked placeholder). */
+function readbackKey(ctx: FlowContext): ScriptKey {
+  return ctx.intent === "RESCHEDULE" ? "confirm_readback_reschedule" : "confirm_readback";
+}
+
 function readbackParams(ctx: FlowContext): Record<string, unknown> {
   return {
     patientName: ctx.collected.patientName ?? null,
@@ -82,9 +130,22 @@ function readbackParams(ctx: FlowContext): Record<string, unknown> {
   };
 }
 
+/** The prompt to re-issue during slot_choice — differs when the caller is
+ * choosing WHICH existing appointment (disambiguation) vs a fresh offer. */
+function slotChoiceKey(ctx: FlowContext): { key: ScriptKey; params?: Record<string, unknown> } {
+  return ctx.disambiguating
+    ? { key: "ask_which_appointment", params: { options: ctx.offeredSlots } }
+    : { key: "offer_slots", params: { options: ctx.offeredSlots } };
+}
+
 /** The question to repeat after a medical-deflection detour (§6 rule 8). */
 function currentQuestionKey(ctx: FlowContext): { key: ScriptKey; params?: Record<string, unknown> } | null {
-  if (ctx.state === "CONFIRM_READBACK") return { key: "confirm_readback", params: readbackParams(ctx) };
+  if (ctx.state === "CONFIRM_READBACK") return { key: readbackKey(ctx), params: readbackParams(ctx) };
+  // At the intent-gathering states, re-prompt with the menu so rule 8's
+  // "return to the previous question" is honored rather than going silent.
+  if (ctx.state === "GREET" || ctx.state === "INTENT" || ctx.state === "CONFUSION") {
+    return { key: "ask_intent_menu" };
+  }
   if (ctx.state === "SLOT_FILL") {
     switch (ctx.slotFillField) {
       case "doctor":
@@ -92,7 +153,7 @@ function currentQuestionKey(ctx: FlowContext): { key: ScriptKey; params?: Record
       case "datetime":
         return { key: "ask_datetime" };
       case "slot_choice":
-        return { key: "offer_slots", params: { options: ctx.offeredSlots } };
+        return slotChoiceKey(ctx);
       case "name":
         return { key: "ask_name" };
       case "phone":
@@ -149,7 +210,7 @@ function afterSlotChosen(ctx: FlowContext): FlowAction[] {
   const missing = nextMissingBookField(ctx);
   if (ctx.intent === "RESCHEDULE") {
     ctx.state = "CONFIRM_READBACK";
-    return [say("confirm_readback", readbackParams(ctx))];
+    return [say(readbackKey(ctx), readbackParams(ctx))];
   }
   if (missing === "name") {
     ctx.state = "SLOT_FILL";
@@ -162,7 +223,7 @@ function afterSlotChosen(ctx: FlowContext): FlowAction[] {
     return [say("ask_phone")];
   }
   ctx.state = "CONFIRM_READBACK";
-  return [say("confirm_readback", readbackParams(ctx))];
+  return [say(readbackKey(ctx), readbackParams(ctx))];
 }
 
 function beginIntent(ctx: FlowContext, intent: Intent, text: string): FlowAction[] {
@@ -242,7 +303,7 @@ function handleUtterance(ctx: FlowContext, text: string): FlowAction[] {
 
     case "CONFIRM_READBACK": {
       const yn = parseYesNo(text);
-      if (yn === null) return parseFailure(ctx, { key: "confirm_readback", params: readbackParams(ctx) });
+      if (yn === null) return parseFailure(ctx, { key: readbackKey(ctx), params: readbackParams(ctx) });
       ctx.failedParses = 0;
       if (yn) {
         if (ctx.intent === "RESCHEDULE") {
@@ -307,11 +368,11 @@ function handleSlotFill(ctx: FlowContext, text: string): FlowAction[] {
     case "slot_choice": {
       const idx = parseOptionChoice(text, optionLabels(ctx.offeredSlots));
       if (idx === null) {
-        return parseFailure(ctx, { key: "offer_slots", params: { options: ctx.offeredSlots } });
+        return parseFailure(ctx, slotChoiceKey(ctx));
       }
       ctx.failedParses = 0;
       const chosen = ctx.offeredSlots[idx];
-      if (!chosen) return parseFailure(ctx, { key: "offer_slots", params: { options: ctx.offeredSlots } });
+      if (!chosen) return parseFailure(ctx, slotChoiceKey(ctx));
 
       if (ctx.disambiguating) {
         // choosing WHICH existing appointment (cancel/reschedule)
@@ -364,7 +425,7 @@ function handleSlotFill(ctx: FlowContext, text: string): FlowAction[] {
       }
       // BOOK: §6 rule 2 — read the digits back in pairs inside the full readback
       ctx.state = "CONFIRM_READBACK";
-      return [say("confirm_readback", readbackParams(ctx))];
+      return [say(readbackKey(ctx), readbackParams(ctx))];
     }
 
     case "consent": {
@@ -398,7 +459,12 @@ function handleToolResult(ctx: FlowContext, tool: string, result: ToolResult): F
     case "get_clinic_info": {
       if (result.ok) {
         ctx.state = "INTENT";
-        actions.push(say("info_summary", { topic: ctx.infoTopic, info: result.data }), say("anything_else"));
+        // I1: the spoken line is assembled from the tool payload only — the
+        // machine phrases facts, it never sources them.
+        actions.push(
+          say("info_summary", { infoLine: formatInfoLine(ctx.infoTopic, result.data) }),
+          say("anything_else"),
+        );
       } else {
         ctx.state = "INTENT";
         actions.push(say("tool_error_apology"), say("anything_else"));
@@ -474,7 +540,11 @@ function handleToolResult(ctx: FlowContext, tool: string, result: ToolResult): F
     case "cancel_booking": {
       if (result.ok) {
         ctx.state = "INTENT";
-        actions.push(say("cancel_confirmed", { cancelled: result.data }), say("anything_else"));
+        const data = result.data as { label?: string; doctor_name?: string };
+        actions.push(
+          say("cancel_confirmed", { label: data.label ?? null, doctorName: data.doctor_name ?? null }),
+          say("anything_else"),
+        );
         return actions;
       }
       if (result.code === "MULTIPLE_MATCHES" && result.alternatives?.length) {

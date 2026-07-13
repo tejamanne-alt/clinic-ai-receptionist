@@ -8,7 +8,8 @@ import type { FlowAction, FlowContext, FlowEvent, ScriptKey } from "../src/lib/c
 const ALL_KEYS: ScriptKey[] = [
   "greeting", "ask_intent_menu", "ask_doctor", "ask_datetime", "offer_slots",
   "no_slots_offer_callback", "ask_name", "ask_phone", "phone_reask",
-  "confirm_readback", "ask_consent", "booked_confirm", "whatsapp_will_send", "offer_alternatives",
+  "confirm_readback", "confirm_readback_reschedule", "ask_consent", "booked_confirm",
+  "whatsapp_will_send", "offer_alternatives",
   "ask_correction", "info_summary", "anything_else", "ask_phone_for_cancel",
   "ask_phone_for_reschedule", "ask_which_appointment", "cancel_confirmed",
   "no_appointment_found", "medical_deflect", "clarify", "escalate_promise",

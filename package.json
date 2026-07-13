@@ -14,6 +14,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:ci": "REQUIRE_DB=1 vitest run",
     "bakeoff": "tsx scripts/bakeoff/run.ts",
     "bakeoff:tts": "tsx scripts/bakeoff/tts.ts",
     "db:setup": "bash scripts/db/setup-local.sh",

@@ -53,7 +53,10 @@ export const rescheduleBookingInput = z
     clinic_id: uuid,
     patient_phone: phoneRaw,
     new_slot_start: isoTimestamp,
+    /** disambiguates WHICH existing appointment to move (its current doctor) */
     doctor_id: uuid.optional(),
+    /** move to a DIFFERENT doctor; defaults to the current one */
+    new_doctor_id: uuid.optional(),
     old_slot_start: isoTimestamp.optional(),
   })
   .strict();

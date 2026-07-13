@@ -200,6 +200,87 @@ describe.skipIf(!HAS_DB)("booking tools (integration)", () => {
     expect(specific.ok).toBe(true);
   });
 
+  it("reschedules to a DIFFERENT doctor via new_doctor_id (not the disambiguation field)", async () => {
+    const iso = await createFixture(pool); // isolated fixture — no slot contention
+    try {
+      const phone = nextPhone();
+      const booked = await executeTool(
+        "create_booking",
+        {
+          clinic_id: iso.clinicId,
+          doctor_id: iso.doctorId,
+          patient_name: "Doctor Switcher",
+          patient_phone: phone,
+          slot_start: iso.slotStarts[0]!,
+          confirmed: true,
+        },
+        pool,
+      );
+      expect(booked.ok).toBe(true);
+      // move to doctor B at a different time
+      const moved = await executeTool(
+        "reschedule_booking",
+        { clinic_id: iso.clinicId, patient_phone: phone, new_slot_start: iso.slotStarts[2]!, new_doctor_id: iso.doctorBId },
+        pool,
+      );
+      expect(moved.ok).toBe(true);
+      if (moved.ok) {
+        const data = moved.data as { doctor_id: string; doctor_name: string };
+        expect(data.doctor_id).toBe(iso.doctorBId);
+        expect(data.doctor_name).toBe("Dr. Test Lakshmi");
+      }
+    } finally {
+      await dropFixture(pool, iso);
+    }
+  });
+
+  it("maps a raw double-book unique violation (slot row lagging) to SLOT_TAKEN + alternatives", async () => {
+    // Force the inconsistency the reviewer found: a confirmed appointment
+    // exists but its slot row is still 'open'. create_booking then trips the
+    // partial unique index (23505) — must surface as SLOT_TAKEN, not TOOL_ERROR.
+    const iso = await createFixture(pool);
+    try {
+      const slot = iso.slotStarts[0]!;
+      const first = await executeTool(
+        "create_booking",
+        {
+          clinic_id: iso.clinicId,
+          doctor_id: iso.doctorId,
+          patient_name: "First Holder",
+          patient_phone: nextPhone(),
+          slot_start: slot,
+          confirmed: true,
+        },
+        pool,
+      );
+      expect(first.ok).toBe(true);
+      // reopen the slot behind the tool's back
+      await pool.query(`update public.slots set status = 'open' where doctor_id = $1 and slot_start = $2::timestamptz`, [
+        iso.doctorId,
+        slot,
+      ]);
+      const second = await executeTool(
+        "create_booking",
+        {
+          clinic_id: iso.clinicId,
+          doctor_id: iso.doctorId,
+          patient_name: "Second Comer",
+          patient_phone: nextPhone(),
+          slot_start: slot,
+          confirmed: true,
+        },
+        pool,
+      );
+      expect(second.ok).toBe(false);
+      if (!second.ok) {
+        expect(second.code).toBe("SLOT_TAKEN");
+        expect(second.alternatives?.length).toBeGreaterThan(0);
+      }
+    } finally {
+      await dropFixture(pool, iso);
+    }
+  });
+
   it("find_slots returns only open slots in ascending order", async () => {
     const result = await executeTool(
       "find_slots",

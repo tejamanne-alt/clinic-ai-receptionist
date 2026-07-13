@@ -34,6 +34,7 @@ export type ScriptKey =
   | "ask_phone"
   | "phone_reask"
   | "confirm_readback"
+  | "confirm_readback_reschedule"
   | "ask_consent"
   | "booked_confirm"
   | "whatsapp_will_send"

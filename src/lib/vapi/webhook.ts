@@ -48,45 +48,74 @@ function parseArgs(args: string | Record<string, unknown>): Record<string, unkno
   return args ?? {};
 }
 
-async function ensureCall(pool: Pool, callId: string, clinicId?: string): Promise<string | null> {
-  if (!clinicId) {
-    const found = await pool.query<{ clinic_id: string }>(
-      `select clinic_id from public.calls where provider_call_id = $1 limit 1`,
-      [callId],
+interface ResolvedCall {
+  internalId: string;
+  clinicId: string;
+}
+
+/**
+ * Idempotently resolve (and if needed create) the single calls row for a
+ * provider call. Returns both the internal id and the authoritative clinic
+ * id. The unique index calls_provider_call_uidx makes ON CONFLICT real, so a
+ * call never spawns duplicate rows (I7). Returns null when no clinic can be
+ * established — callers must fail closed rather than trust model input.
+ */
+async function ensureCall(pool: Pool, callId: string, clinicId: string | undefined, fromPhone?: string | null): Promise<ResolvedCall | null> {
+  if (clinicId) {
+    const upserted = await pool.query<{ id: string; clinic_id: string }>(
+      `insert into public.calls (provider, provider_call_id, clinic_id, direction, from_phone)
+       values ('vapi', $1, $2, 'inbound', $3)
+       on conflict (provider, provider_call_id) where provider_call_id is not null
+       do update set from_phone = coalesce(public.calls.from_phone, excluded.from_phone)
+       returning id, clinic_id`,
+      [callId, clinicId, fromPhone ?? null],
     );
-    return found.rows[0]?.clinic_id ?? null;
+    const row = upserted.rows[0];
+    return row ? { internalId: row.id, clinicId: row.clinic_id } : null;
   }
-  await pool.query(
-    `insert into public.calls (provider, provider_call_id, clinic_id, direction)
-     values ('vapi', $1, $2, 'inbound')
-     on conflict do nothing`,
-    [callId, clinicId],
+  const found = await pool.query<{ id: string; clinic_id: string }>(
+    `select id, clinic_id from public.calls where provider = 'vapi' and provider_call_id = $1 limit 1`,
+    [callId],
   );
-  return clinicId;
+  const row = found.rows[0];
+  return row ? { internalId: row.id, clinicId: row.clinic_id } : null;
 }
 
 async function logEvent(
   pool: Pool,
-  callId: string,
+  internalCallId: string,
   eventType: string,
   payload: Record<string, unknown>,
   latencyMs?: number,
 ): Promise<void> {
-  const call = await pool.query<{ id: string }>(
-    `select id from public.calls where provider_call_id = $1 limit 1`,
-    [callId],
-  );
-  const id = call.rows[0]?.id;
-  if (!id) return;
   await pool.query(
     `insert into public.call_events (call_id, event_type, payload, latency_ms) values ($1, $2, $3, $4)`,
-    [id, eventType, payload, latencyMs ?? null],
+    [internalCallId, eventType, payload, latencyMs ?? null],
   );
+}
+
+/** Best-effort intent tag from the tool the model called (A2 audit record). */
+function intentForTool(name: string): string | null {
+  switch (name) {
+    case "create_booking":
+      return "BOOK";
+    case "cancel_booking":
+      return "CANCEL";
+    case "reschedule_booking":
+      return "RESCHEDULE";
+    case "get_clinic_info":
+      return "INFO";
+    case "request_callback":
+      return "FALLBACK";
+    default:
+      return null;
+  }
 }
 
 export async function handleVapiMessage(message: VapiMessage, pool: Pool = getPool()): Promise<WebhookResult> {
   const callId = message.call?.id;
   const clinicId = message.call?.metadata?.clinicId;
+  const fromPhone = (message.call as { customer?: { number?: string } } | undefined)?.customer?.number ?? null;
 
   switch (message.type) {
     case "tool-calls":
@@ -98,49 +127,62 @@ export async function handleVapiMessage(message: VapiMessage, pool: Pool = getPo
           ? [{ id: "legacy", function: { name: message.functionCall.name, arguments: message.functionCall.parameters } }]
           : []);
 
-      if (callId) await ensureCall(pool, callId, clinicId);
+      // Resolve the authoritative clinic + internal call id ONCE. Fail closed
+      // if we cannot establish a clinic — never fall back to model-supplied
+      // clinic_id (I1/I5 cross-tenant guard).
+      const resolved = callId ? await ensureCall(pool, callId, clinicId, fromPhone) : null;
+      const effectiveClinicId = resolved?.clinicId ?? clinicId;
+      if (!effectiveClinicId) {
+        return { status: 400, body: { error: "no clinic scope for call" } };
+      }
+      const internalCallId = resolved?.internalId ?? null;
 
       // Only these tools' schemas accept a call_id; injecting it into others
       // would trip their strict() validation (I5).
       const CALL_ID_TOOLS = new Set(["create_booking", "request_callback"]);
-      let internalCallId: string | null = null;
-      if (callId) {
-        const internal = await pool.query<{ id: string }>(
-          `select id from public.calls where provider_call_id = $1 limit 1`,
-          [callId],
-        );
-        internalCallId = internal.rows[0]?.id ?? null;
-      }
 
       const results = await Promise.all(
         calls.map(async (tc) => {
           const name = tc.function.name;
           const args = parseArgs(tc.function.arguments);
-          // I1: inject the trusted clinic_id / call_id from call metadata,
-          // never trust the model to supply them.
-          if (clinicId) args.clinic_id = clinicId;
+          // I1: inject the trusted clinic_id / call_id, never trust the model.
+          args.clinic_id = effectiveClinicId;
           if (internalCallId && CALL_ID_TOOLS.has(name)) args.call_id = internalCallId;
 
           const t0 = performance.now();
           const result = await executeTool(name, args, pool);
           const latencyMs = Math.round(performance.now() - t0);
-          if (callId) {
-            await logEvent(pool, callId, `tool:${name}`, { ok: result.ok, code: result.ok ? null : result.code }, latencyMs);
+          if (internalCallId) {
+            await logEvent(pool, internalCallId, `tool:${name}`, { ok: result.ok, code: result.ok ? null : result.code }, latencyMs);
+            // A2 audit record: tag the call's intent from the tool used.
+            const intent = intentForTool(name);
+            if (intent) {
+              await pool.query(`update public.calls set intent = coalesce(intent, $2) where id = $1`, [internalCallId, intent]);
+            }
           }
 
-          // §6 rule 5: fire the WhatsApp confirmation only after a successful
-          // booking, and only if consent was recorded (the sender re-checks).
-          if (name === "create_booking" && result.ok && clinicId) {
-            const data = result.data as { appointment_id?: string };
-            if (data.appointment_id) {
-              const outcome = await sendBookingConfirmation(
-                { clinicId, appointmentId: data.appointment_id, callId: internalCallId ?? undefined },
-                pool,
-              );
-              if (callId) await logEvent(pool, callId, "whatsapp_confirmation", { ...outcome });
-            }
-            if (callId) {
-              await pool.query(`update public.calls set outcome = 'booked' where provider_call_id = $1`, [callId]);
+          // Post-commit side effects are wrapped so a failure here can NEVER
+          // discard an already-successful booking (finding #8).
+          if (name === "create_booking" && result.ok) {
+            try {
+              const data = result.data as { appointment_id?: string };
+              if (data.appointment_id) {
+                // §6 rule 5: confirmation is gated on THIS booking's stored consent.
+                const outcome = await sendBookingConfirmation(
+                  { clinicId: effectiveClinicId, appointmentId: data.appointment_id, callId: internalCallId ?? undefined },
+                  pool,
+                );
+                if (internalCallId) await logEvent(pool, internalCallId, "whatsapp_confirmation", { ...outcome });
+              }
+              if (internalCallId) {
+                const consent = typeof args.whatsapp_consent === "boolean" ? args.whatsapp_consent : null;
+                await pool.query(`update public.calls set outcome = 'booked', whatsapp_consent = $2 where id = $1`, [
+                  internalCallId,
+                  consent,
+                ]);
+              }
+            } catch (sideErr) {
+              console.error("[vapi webhook] post-booking side effect failed", sideErr);
             }
           }
 
@@ -152,15 +194,16 @@ export async function handleVapiMessage(message: VapiMessage, pool: Pool = getPo
     }
 
     case "status-update": {
-      if (callId && clinicId) await ensureCall(pool, callId, clinicId);
-      if (callId && message.status) await logEvent(pool, callId, `status:${message.status}`, { status: message.status });
+      const resolved = callId ? await ensureCall(pool, callId, clinicId, fromPhone) : null;
+      if (resolved && message.status) await logEvent(pool, resolved.internalId, `status:${message.status}`, { status: message.status });
       return { status: 200, body: { ok: true } };
     }
 
     case "speech-update":
     case "transcript": {
-      if (callId) {
-        await logEvent(pool, callId, message.type, {
+      const resolved = callId ? await ensureCall(pool, callId, clinicId, fromPhone) : null;
+      if (resolved) {
+        await logEvent(pool, resolved.internalId, message.type, {
           role: (message.role as string) ?? null,
           transcriptType: (message.transcriptType as string) ?? null,
         });
@@ -169,17 +212,18 @@ export async function handleVapiMessage(message: VapiMessage, pool: Pool = getPo
     }
 
     case "end-of-call-report": {
-      if (callId) {
+      const resolved = callId ? await ensureCall(pool, callId, clinicId, fromPhone) : null;
+      if (resolved) {
         const transcript = (message.artifact as { messages?: unknown })?.messages ?? message.transcript ?? [];
         await pool.query(
           `update public.calls
               set ended_at = now(),
                   outcome = coalesce(outcome, $2),
                   transcript = $3
-            where provider_call_id = $1`,
-          [callId, mapEndedReason(message.endedReason), JSON.stringify(transcript)],
+            where id = $1`,
+          [resolved.internalId, mapEndedReason(message.endedReason), JSON.stringify(transcript)],
         );
-        await logEvent(pool, callId, "end-of-call", { endedReason: message.endedReason ?? null });
+        await logEvent(pool, resolved.internalId, "end-of-call", { endedReason: message.endedReason ?? null });
       }
       return { status: 200, body: { ok: true } };
     }

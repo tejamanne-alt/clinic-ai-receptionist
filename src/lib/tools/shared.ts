@@ -66,6 +66,13 @@ export async function nearestAlternatives(
 
 /** Postgres raise-exception messages we convert into typed tool failures. */
 export function pgErrorCode(err: unknown): string | null {
+  // The double-book unique index (I6) raises SQLSTATE 23505 if a confirmed
+  // appointment already exists for the slot even when slots.status lagged —
+  // treat it as SLOT_TAKEN so the caller still gets alternatives (§6 rule 3).
+  const pgCode = (err as { code?: string; constraint?: string } | null)?.code;
+  if (pgCode === "23505" && (err as { constraint?: string }).constraint === "appointments_no_double_book") {
+    return "SLOT_TAKEN";
+  }
   if (err instanceof Error) {
     const m = /^(SLOT_TAKEN|SLOT_NOT_FOUND|CLINIC_MISMATCH|APPOINTMENT_NOT_FOUND_OR_NOT_CONFIRMED|DOCTOR_NOT_FOUND)/.exec(
       err.message,
