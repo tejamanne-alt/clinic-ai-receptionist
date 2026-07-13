@@ -9,8 +9,11 @@ out/
 .env.*
 !.env.example
 
-# generated audio samples (regenerable via pnpm bakeoff:tts)
+# generated reports (regenerable; may carry clinic-specific demo data)
+reports/*.md
+reports/*.json
 reports/tts-samples/
+!reports/.gitkeep
 
 # misc
 .DS_Store

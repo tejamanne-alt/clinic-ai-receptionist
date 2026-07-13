@@ -15,7 +15,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "bakeoff": "tsx scripts/bakeoff/run.ts",
-    "bakeoff:tts": "tsx scripts/bakeoff/tts.ts"
+    "bakeoff:tts": "tsx scripts/bakeoff/tts.ts",
+    "db:setup": "bash scripts/db/setup-local.sh",
+    "vapi:sync": "tsx scripts/vapi/sync-assistant.ts",
+    "audit:keys": "bash scripts/audit/key-exposure.sh",
+    "audit:latency": "tsx scripts/audit/latency-report.ts",
+    "roi": "tsx scripts/roi-one-pager.ts",
+    "test:integration": "vitest run tests/integration"
   },
   "dependencies": {
     "@vapi-ai/web": "^2.6.1",
