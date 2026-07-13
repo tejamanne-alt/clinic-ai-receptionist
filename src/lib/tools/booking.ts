@@ -76,13 +76,18 @@ async function upsertPatient(
     await pool.query(`update public.patients set whatsapp_consent = $2 where id = $1`, [found.id, whatsappConsent]);
     return found.id;
   }
+  // ON CONFLICT on patients_identity_uidx makes the insert race-safe: two
+  // concurrent bookings for a new (clinic, phone, name) collapse to one row.
   const inserted = await pool.query<{ id: string }>(
     `insert into public.patients (clinic_id, full_name, phone, whatsapp_consent)
-     values ($1, $2, $3, $4) returning id`,
+     values ($1, $2, $3, $4)
+     on conflict (clinic_id, phone, lower(full_name)) where deleted_at is null
+     do update set whatsapp_consent = excluded.whatsapp_consent
+     returning id`,
     [clinicId, name, phone, whatsappConsent],
   );
   const row = inserted.rows[0];
-  if (!row) throw new Error("patient insert returned no row");
+  if (!row) throw new Error("patient upsert returned no row");
   return row.id;
 }
 

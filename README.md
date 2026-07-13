@@ -19,13 +19,38 @@ adapter · WhatsApp via a `MessagingProvider` adapter.
 ```bash
 pnpm install
 cp .env.example .env        # fill in server-side keys (never NEXT_PUBLIC_)
+
+# local Postgres for the full (integration) test suite:
+pnpm db:setup               # creates + migrates + seeds a local vaani DB
+export DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/vaani
+
 pnpm typecheck && pnpm lint && pnpm test
-pnpm dev                    # placeholder status page for now
+pnpm dev                    # /  status · /call browser call · /dashboard
 ```
 
-Database: apply `supabase/migrations/*.sql` in order (Supabase CLI:
-`supabase db push`), then optionally `supabase/seed.sql` for a demo clinic
-with two doctors and two weeks of 15-minute slots.
+Unit tests run without a DB; the integration suite (double-book race, RLS,
+consent gate, webhook) needs `DATABASE_URL`. `pnpm test:ci` fails loudly if the
+DB is missing so integration coverage can't be silently skipped.
+
+Against a real Supabase project, apply `supabase/migrations/*.sql` in order
+(`supabase db push`) then `supabase/seed.sql` for a demo clinic with two
+doctors and two weeks of 15-minute slots.
+
+## What works today
+
+- **Booking core** — deterministic tools reading Postgres (I1); no double-book
+  (DB constraint + `FOR UPDATE`, I6); book / cancel / reschedule / info / callback.
+- **Call-flow engine** — the full §6 state machine as a pure, tested reducer:
+  slot-fill order, explicit-yes readback gate, consent-before-WhatsApp, silence
+  and confusion ladders, medical deflection, language mirroring.
+- **Voice** — Vapi assistant built from the prompt files + tool registry;
+  `/call` browser page with live transcript and first-audio latency.
+- **Dashboard** — today's appointments, call log with outcomes, callback queue.
+- **WhatsApp** — consent-gated confirmation (per-call consent, DB-backstopped).
+- **Audits** — `pnpm audit:keys` (client-bundle secret scan), `pnpm audit:latency`,
+  `pnpm roi`.
+
+See `BUILD_STATE.md` for exact gate status and the human-blocked items.
 
 ## Phase 0 — STT/TTS bake-off
 
