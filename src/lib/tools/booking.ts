@@ -173,9 +173,12 @@ async function findConfirmedAppointments(
   return rows;
 }
 
-function describeCandidates(rows: CandidateRow[]): Array<{ slot_start: string; doctor_name: string; label: string }> {
+/** Existing appointments as SlotOption-shaped choices the flow can offer. */
+function candidateOptions(rows: CandidateRow[]): SlotOption[] {
   return rows.map((r) => ({
     slot_start: r.slot_start.toISOString(),
+    slot_end: r.slot_end.toISOString(),
+    doctor_id: r.doctor_id,
     doctor_name: r.doctor_name,
     label: slotLabel(r.slot_start),
   }));
@@ -193,11 +196,11 @@ export async function cancelBooking(
     return fail("APPOINTMENT_NOT_FOUND", "No upcoming confirmed appointment for that phone number.");
   }
   if (candidates.length > 1) {
-    return {
-      ok: false,
-      code: "MULTIPLE_MATCHES",
-      message: `Found ${candidates.length} upcoming appointments — ask which one: ${JSON.stringify(describeCandidates(candidates))}`,
-    };
+    return fail(
+      "MULTIPLE_MATCHES",
+      `Found ${candidates.length} upcoming appointments — ask which one.`,
+      candidateOptions(candidates),
+    );
   }
   const target = candidates[0];
   if (!target) return fail("APPOINTMENT_NOT_FOUND", "No upcoming confirmed appointment for that phone number.");
@@ -227,11 +230,11 @@ export async function rescheduleBooking(
     return fail("APPOINTMENT_NOT_FOUND", "No upcoming confirmed appointment for that phone number.");
   }
   if (candidates.length > 1) {
-    return {
-      ok: false,
-      code: "MULTIPLE_MATCHES",
-      message: `Found ${candidates.length} upcoming appointments — ask which one: ${JSON.stringify(describeCandidates(candidates))}`,
-    };
+    return fail(
+      "MULTIPLE_MATCHES",
+      `Found ${candidates.length} upcoming appointments — ask which one.`,
+      candidateOptions(candidates),
+    );
   }
   const target = candidates[0];
   if (!target) return fail("APPOINTMENT_NOT_FOUND", "No upcoming confirmed appointment for that phone number.");
