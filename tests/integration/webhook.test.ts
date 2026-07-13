@@ -127,7 +127,9 @@ describe.skipIf(!HAS_DB)("vapi webhook (integration)", () => {
       `select outcome, ended_at, transcript from public.calls where provider_call_id = $1`,
       [providerCallId],
     );
-    expect(call.rows[0]!.outcome).toBe("abandoned");
+    // This call booked earlier in the suite; the booking outcome must win over
+    // the hangup reason (coalesce preserves 'booked' — a booked call is booked).
+    expect(call.rows[0]!.outcome).toBe("booked");
     expect(call.rows[0]!.ended_at).not.toBeNull();
     expect(JSON.stringify(call.rows[0]!.transcript)).toContain("namaste");
   });

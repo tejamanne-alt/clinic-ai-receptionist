@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { getPool } from "../db";
+import { sendBookingConfirmation } from "../messaging/confirmation";
 import { executeTool } from "../tools";
 
 /**
@@ -126,6 +127,23 @@ export async function handleVapiMessage(message: VapiMessage, pool: Pool = getPo
           if (callId) {
             await logEvent(pool, callId, `tool:${name}`, { ok: result.ok, code: result.ok ? null : result.code }, latencyMs);
           }
+
+          // §6 rule 5: fire the WhatsApp confirmation only after a successful
+          // booking, and only if consent was recorded (the sender re-checks).
+          if (name === "create_booking" && result.ok && clinicId) {
+            const data = result.data as { appointment_id?: string };
+            if (data.appointment_id) {
+              const outcome = await sendBookingConfirmation(
+                { clinicId, appointmentId: data.appointment_id, callId: internalCallId ?? undefined },
+                pool,
+              );
+              if (callId) await logEvent(pool, callId, "whatsapp_confirmation", { ...outcome });
+            }
+            if (callId) {
+              await pool.query(`update public.calls set outcome = 'booked' where provider_call_id = $1`, [callId]);
+            }
+          }
+
           return { toolCallId: tc.id, name, result: JSON.stringify(result) };
         }),
       );
